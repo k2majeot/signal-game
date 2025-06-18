@@ -1,6 +1,6 @@
 class MainGame extends Phaser.Scene {
   constructor() {
-    super('MainGame');
+    super("MainGame");
   }
 
   preload() {}
@@ -10,47 +10,100 @@ class MainGame extends Phaser.Scene {
     this.centerX = width / 2;
     this.centerY = height / 2;
 
+    // ─── Wave drawing helper ──────────────────────────────────────────────
     this.waveGraphics = this.add.graphics();
+
+    // ─── Pointer (player-controlled) ──────────────────────────────────────
     this.pointerY = this.centerY;
-
+    this.prevPointerY = this.pointerY; // store last-frame y for velocity
     this.pointerDot = this.add.circle(this.centerX, this.pointerY, 6, 0xffffff);
-    this.lockGlow = this.add.circle(this.centerX, this.pointerY, 12)
-      .setStrokeStyle(2, 0xffff00)
-      .setVisible(false);
 
+    // ─── Wave parameters ──────────────────────────────────────────────────
+    this.phase = 0; // time phase for vertical pulse
+    this.baseAmplitude = height * 0.15;
+    this.baseFrequency = 0.02; // spatial frequency (rad / px)
+
+    // Dynamic multipliers modified by interference logic
+    this.ampFactor = 1; // 0.5 ≤ ampFactor ≤ 3
+    this.freqFactor = 1; // 0.5 ≤ freqFactor ≤ 3
+
+    // Color gradient for the wave
     this.gradientColors = [0x00ffff, 0x8000ff, 0xff0080];
 
-    this.phase = 0;
-    this.baseAmplitude = height * 0.15;
-    this.amplitudeVariation = height * 0.05;
-    this.baseFrequency = 0.02;
-    this.frequencyVariation = 0.005;
-
-    this.input.on('pointermove', pointer => {
+    // Pointer input
+    this.input.on("pointermove", (pointer) => {
       this.pointerY = Phaser.Math.Clamp(pointer.y, 0, height);
     });
+
+    // Track previous crest Y to compute its velocity
+    this.prevCrestY = this.centerY;
   }
 
+  // Linear gradient helper --------------------------------------------------
   getGradientColor(t) {
     const n = this.gradientColors.length - 1;
     const scaled = t * n;
     const idx = Math.floor(scaled);
     const localT = scaled - idx;
-    const colorA = Phaser.Display.Color.ValueToColor(this.gradientColors[idx]);
-    const colorB = Phaser.Display.Color.ValueToColor(this.gradientColors[Math.min(idx + 1, n)]);
-    const col = Phaser.Display.Color.Interpolate.ColorWithColor(colorA, colorB, 1, localT);
+    const cA = Phaser.Display.Color.ValueToColor(this.gradientColors[idx]);
+    const cB = Phaser.Display.Color.ValueToColor(
+      this.gradientColors[Math.min(idx + 1, n)]
+    );
+    const col = Phaser.Display.Color.Interpolate.ColorWithColor(
+      cA,
+      cB,
+      1,
+      localT
+    );
     return Phaser.Display.Color.GetColor(col.r, col.g, col.b);
   }
 
+  // Stationary wave with Gaussian fall-off from center ----------------------
   getWaveY(x, amplitude, frequency, phase) {
-    return this.centerY + amplitude * Math.sin(frequency * (x - this.centerX) + phase);
+    const decayLen = this.scale.width * 0.1; // tweak: smaller = steeper drop
+    const falloff = Math.exp(-Math.pow((x - this.centerX) / decayLen, 2));
+
+    return (
+      this.centerY +
+      falloff *
+        amplitude *
+        Math.cos(frequency * (x - this.centerX)) * // horizontal pattern stays
+        Math.sin(phase) // vertical pulse driver
+    );
   }
 
   update(time, delta) {
-    const { width, height } = this.scale;
-    this.phase += delta * 0.001;
-    const amplitude = this.baseAmplitude + this.amplitudeVariation * Math.sin(this.phase * 0.5);
-    const frequency = this.baseFrequency + this.frequencyVariation * Math.sin(this.phase * 0.3);
+    const dt = delta / 1000; // convert ms → s
+    const { width } = this.scale;
+
+    // ─── Interference check (pointer vs. crest) ──────────────────────────
+    // Current crest (wave value at centerX)
+    const crestY = this.getWaveY(
+      this.centerX,
+      this.baseAmplitude * this.ampFactor,
+      this.baseFrequency * this.freqFactor,
+      this.phase
+    );
+
+    // Velocities (sign tells us direction)
+    const pointerVel = (this.pointerY - this.prevPointerY) / dt;
+    const crestVel = (crestY - this.prevCrestY) / dt;
+
+    // Constructive ⇢ grow, Destructive ⇢ shrink
+    const sameDir = pointerVel * crestVel > 0;
+    const adjust = sameDir ? 1 : -1; // +1 amplify, –1 dampen
+    const ampStep = 0.3 * dt * adjust; // tweak rates as desired
+    const freqStep = 0.15 * dt * adjust;
+
+    this.ampFactor = Phaser.Math.Clamp(this.ampFactor + ampStep, 0.5, 3);
+    this.freqFactor = Phaser.Math.Clamp(this.freqFactor + freqStep, 0.5, 3);
+
+    // ─── Advance phase for vertical oscillation only ─────────────────────
+    this.phase += 2 * Math.PI * dt; // 1 Hz pulse; scale if desired
+
+    // ─── Draw wave ────────────────────────────────────────────────────────
+    const amplitude = this.baseAmplitude * this.ampFactor;
+    const frequency = this.baseFrequency * this.freqFactor;
 
     this.waveGraphics.clear();
     const step = 4;
@@ -67,34 +120,24 @@ class MainGame extends Phaser.Scene {
       this.waveGraphics.strokePath();
     }
 
-    // Update pointer dot
+    // ─── Update pointer dot ───────────────────────────────────────────────
     this.pointerDot.y = this.pointerY;
-    this.lockGlow.y = this.pointerY;
 
-    // Lock-on detection at centerX
-    const waveY = this.getWaveY(this.centerX, amplitude, frequency, this.phase);
-    const dist = Math.abs(this.pointerY - waveY);
-    const locked = dist <= 20;
-
-    this.lockGlow.visible = locked;
-    if (locked) {
-      const pulse = 1 + 0.3 * Math.sin(this.phase * 10);
-      this.lockGlow.setScale(pulse);
-      this.pointerDot.setFillStyle(0xffff00);
-    } else {
-      this.pointerDot.setFillStyle(0xffffff);
-    }
+    // ─── Store previous values for next frame ─────────────────────────────
+    this.prevPointerY = this.pointerY;
+    this.prevCrestY = crestY;
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
 const config = {
   type: Phaser.AUTO,
   width: window.innerWidth,
   height: window.innerHeight,
-  backgroundColor: '#080808',
-  scene: MainGame
+  backgroundColor: "#080808",
+  scene: MainGame,
 };
 
-window.addEventListener('load', () => {
-  const game = new Phaser.Game(config);
+window.addEventListener("load", () => {
+  new Phaser.Game(config);
 });
