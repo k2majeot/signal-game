@@ -3,12 +3,19 @@ class Pulse {
     this.scene = scene;
     this.body = scene.add.circle(x, y, 8, 0xffcc00);
     this.velY = velocityY;
+    this.velX = 0;
     this.alive = true;
   }
 
   update(dt) {
     this.velY += 500 * dt; // gravity
     this.body.y += this.velY * dt;
+    this.body.x += this.velX * dt;
+    this.body.x = Phaser.Math.Clamp(
+      this.body.x,
+      0,
+      this.scene.scale.width
+    );
     if (this.body.y > this.scene.scale.height + 20) {
       this.alive = false;
     }
@@ -34,6 +41,10 @@ class MainGame extends Phaser.Scene {
     const { width, height } = this.scale;
     this.centerX = width / 2;
     this.centerY = height / 2;
+
+    this.cameras.main.setBounds(0, -height, width, height * 2);
+
+    this.keys = this.input.keyboard.addKeys("A,D");
 
     // ─── Wave drawing helper ──────────────────────────────────────────────
     this.waveGraphics = this.add.graphics();
@@ -82,6 +93,7 @@ class MainGame extends Phaser.Scene {
       );
       const strength = -600 * this.ampFactor * this.upgrades.launch;
       this.pulse = new Pulse(this, this.centerX, crestY, strength);
+      this.cameras.main.startFollow(this.pulse.body);
       this.score = 0;
       this.state = "launch";
     });
@@ -143,6 +155,13 @@ class MainGame extends Phaser.Scene {
       this.ampFactor = Phaser.Math.Clamp(this.ampFactor + ampStep, 0.5, 3);
       this.freqFactor = Phaser.Math.Clamp(this.freqFactor + freqStep, 0.5, 3);
     } else if (this.state === "launch") {
+      if (this.keys.A.isDown) {
+        this.pulse.velX = -200;
+      } else if (this.keys.D.isDown) {
+        this.pulse.velX = 200;
+      } else {
+        this.pulse.velX = 0;
+      }
       this.pulse.update(dt);
       this.score = Math.max(this.score, this.centerY - this.pulse.body.y);
       this.scoreText.setText("Score: " + Math.floor(this.score));
@@ -183,6 +202,8 @@ class MainGame extends Phaser.Scene {
   }
 
   endRun() {
+    this.cameras.main.stopFollow();
+    this.cameras.main.scrollY = 0;
     this.state = "end";
     const final = Math.floor(this.score);
     const msg = this.add
