@@ -1,6 +1,31 @@
+class Pulse {
+  constructor(scene, x, y, velocityY) {
+    this.scene = scene;
+    this.body = scene.add.circle(x, y, 8, 0xffcc00);
+    this.velY = velocityY;
+    this.alive = true;
+  }
+
+  update(dt) {
+    this.velY += 500 * dt; // gravity
+    this.body.y += this.velY * dt;
+    if (this.body.y > this.scene.scale.height + 20) {
+      this.alive = false;
+    }
+  }
+
+  destroy() {
+    this.body.destroy();
+  }
+}
+
 class MainGame extends Phaser.Scene {
   constructor() {
     super("MainGame");
+  }
+
+  init(data) {
+    this.upgrades = data?.upgrades || { launch: 1, wave: 1 };
   }
 
   preload() {}
@@ -20,7 +45,7 @@ class MainGame extends Phaser.Scene {
 
     // ─── Wave parameters ──────────────────────────────────────────────────
     this.phase = 0; // time phase for vertical pulse
-    this.baseAmplitude = height * 0.15;
+    this.baseAmplitude = height * 0.15 * this.upgrades.wave;
     this.baseFrequency = 0.02; // spatial frequency (rad / px)
 
     // Dynamic multipliers modified by interference logic
@@ -37,6 +62,29 @@ class MainGame extends Phaser.Scene {
 
     // Track previous crest Y to compute its velocity
     this.prevCrestY = this.centerY;
+
+    // ─── Game state --------------------------------------------------------
+    this.state = "aim"; // aim → launch → end
+    this.score = 0;
+
+    this.scoreText = this.add
+      .text(10, 10, "Score: 0", { fontFamily: "monospace", fontSize: 16, color: "#ffffff" })
+      .setDepth(10);
+
+    // Pointer click launches a pulse
+    this.input.on("pointerdown", () => {
+      if (this.state !== "aim") return;
+      const crestY = this.getWaveY(
+        this.centerX,
+        this.baseAmplitude * this.ampFactor,
+        this.baseFrequency * this.freqFactor,
+        this.phase
+      );
+      const strength = -600 * this.ampFactor * this.upgrades.launch;
+      this.pulse = new Pulse(this, this.centerX, crestY, strength);
+      this.score = 0;
+      this.state = "launch";
+    });
   }
 
   // Linear gradient helper --------------------------------------------------
@@ -76,7 +124,7 @@ class MainGame extends Phaser.Scene {
     const dt = delta / 1000; // convert ms → s
     const { width } = this.scale;
 
-    // ─── Interference check (pointer vs. crest) ──────────────────────────
+    // ─── Interference + State Updates ─────────────────────────────────---
     // Current crest (wave value at centerX)
     const crestY = this.getWaveY(
       this.centerX,
@@ -85,21 +133,27 @@ class MainGame extends Phaser.Scene {
       this.phase
     );
 
-    // Velocities (sign tells us direction)
-    const pointerVel = (this.pointerY - this.prevPointerY) / dt;
-    const crestVel = (crestY - this.prevCrestY) / dt;
+    if (this.state === "aim") {
+      const pointerVel = (this.pointerY - this.prevPointerY) / dt;
+      const crestVel = (crestY - this.prevCrestY) / dt;
+      const sameDir = pointerVel * crestVel > 0;
+      const adjust = sameDir ? 1 : -1;
+      const ampStep = 0.3 * dt * adjust;
+      const freqStep = 0.15 * dt * adjust;
+      this.ampFactor = Phaser.Math.Clamp(this.ampFactor + ampStep, 0.5, 3);
+      this.freqFactor = Phaser.Math.Clamp(this.freqFactor + freqStep, 0.5, 3);
+    } else if (this.state === "launch") {
+      this.pulse.update(dt);
+      this.score = Math.max(this.score, this.centerY - this.pulse.body.y);
+      this.scoreText.setText("Score: " + Math.floor(this.score));
+      if (!this.pulse.alive) {
+        this.pulse.destroy();
+        this.endRun();
+      }
+    }
 
-    // Constructive ⇢ grow, Destructive ⇢ shrink
-    const sameDir = pointerVel * crestVel > 0;
-    const adjust = sameDir ? 1 : -1; // +1 amplify, –1 dampen
-    const ampStep = 0.3 * dt * adjust; // tweak rates as desired
-    const freqStep = 0.15 * dt * adjust;
-
-    this.ampFactor = Phaser.Math.Clamp(this.ampFactor + ampStep, 0.5, 3);
-    this.freqFactor = Phaser.Math.Clamp(this.freqFactor + freqStep, 0.5, 3);
-
-    // ─── Advance phase for vertical oscillation only ─────────────────────
-    this.phase += 2 * Math.PI * dt; // 1 Hz pulse; scale if desired
+    // ─── Advance phase for vertical oscillation only ─────────────────----
+    this.phase += 2 * Math.PI * dt; // 1 Hz pulse
 
     // ─── Draw wave ────────────────────────────────────────────────────────
     const amplitude = this.baseAmplitude * this.ampFactor;
@@ -126,6 +180,31 @@ class MainGame extends Phaser.Scene {
     // ─── Store previous values for next frame ─────────────────────────────
     this.prevPointerY = this.pointerY;
     this.prevCrestY = crestY;
+  }
+
+  endRun() {
+    this.state = "end";
+    const final = Math.floor(this.score);
+    const msg = this.add
+      .text(this.centerX, this.centerY - 40, `Final Score: ${final}`,
+        { fontFamily: "monospace", fontSize: 24, color: "#ffffff" })
+      .setOrigin(0.5);
+    const restart = this.add
+      .text(this.centerX, this.centerY, "Click to restart",
+        { fontFamily: "monospace", fontSize: 18, color: "#ffffff" })
+      .setOrigin(0.5);
+
+    this.input.once("pointerdown", () => {
+      msg.destroy();
+      restart.destroy();
+      if (this.score > 200) {
+        this.upgrades.launch += 0.1; // simple progression
+      }
+      if (this.score > 400) {
+        this.upgrades.wave += 0.1;
+      }
+      this.scene.restart({ upgrades: this.upgrades });
+    });
   }
 }
 
